@@ -120,7 +120,7 @@ func (s *Server) scheduleRunner(ctx context.Context, name string, caps []model.C
 
 	// This model is much more capable with a larger context, so set that
 	// unless it would penalize performance too much
-	if !s.lowVRAM && slices.Contains(model.Config.ModelFamilies, "gptoss") {
+	if !s.lowVRAM && slices.Contains([]string{"gptoss", "gpt-oss"}, model.Config.ModelFamily) {
 		opts.NumCtx = max(opts.NumCtx, 8192)
 	}
 
@@ -205,7 +205,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 
 	// Validate Think value: string values currently only allowed for gptoss models
 	if req.Think != nil && req.Think.IsString() && !useHarmony {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("think value %q is not supported for this model", req.Think.AsString())})
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("think value %q is not supported for this model", req.Think.String())})
 		return
 	}
 
@@ -213,7 +213,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 	if req.Suffix != "" {
 		caps = append(caps, model.CapabilityInsert)
 	}
-	if req.Think != nil && req.Think.AsBool() {
+	if req.Think != nil && req.Think.Bool() {
 		caps = append(caps, model.CapabilityThinking)
 		// TODO(drifkin): consider adding a warning if it's false and the model
 		// doesn't support thinking. It's not strictly required, but it can be a
@@ -288,10 +288,10 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 			values.Messages = append(msgs, api.Message{Role: "user", Content: req.Prompt})
 		}
 
-		values.Think = req.Think != nil && req.Think.AsBool()
+		values.Think = req.Think != nil && req.Think.Bool()
 		values.ThinkLevel = ""
 		if req.Think != nil {
-			values.ThinkLevel = req.Think.AsString()
+			values.ThinkLevel = req.Think.String()
 		}
 		values.IsThinkSet = req.Think != nil
 
@@ -317,7 +317,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 	var thinkingState *thinking.Parser
 	if !useHarmony {
 		openingTag, closingTag := thinking.InferTags(m.Template.Template)
-		if req.Think != nil && req.Think.AsBool() && openingTag != "" && closingTag != "" {
+		if req.Think != nil && req.Think.Bool() && openingTag != "" && closingTag != "" {
 			thinkingState = &thinking.Parser{
 				OpeningTag: openingTag,
 				ClosingTag: closingTag,
@@ -371,7 +371,8 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 						*toolName = strings.TrimPrefix(*toolName, "functions.")
 						var args api.ToolCallFunctionArguments
 						if err := json.Unmarshal([]byte(toolContent), &args); err != nil {
-							ch <- gin.H{"error parsing tool call": err.Error()}
+							errStr := fmt.Sprintf("error parsing tool call: raw='%s', err=%s", toolContent, err.Error())
+							ch <- gin.H{"error": errStr}
 							return
 						}
 
@@ -1476,14 +1477,14 @@ func (s *Server) PsHandler(c *gin.Context) {
 		mr := api.ProcessModelResponse{
 			Model:     model.ShortName,
 			Name:      model.ShortName,
-			Size:      int64(v.estimatedTotal),
-			SizeVRAM:  int64(v.estimatedVRAM),
+			Size:      int64(v.totalSize),
+			SizeVRAM:  int64(v.vramSize),
 			Digest:    model.Digest,
 			Details:   modelDetails,
 			ExpiresAt: v.expiresAt,
 		}
 		if v.Options != nil {
-			mr.ContextLength = v.Options.NumCtx / v.numParallel
+			mr.ContextLength = v.Options.NumCtx
 		}
 		// The scheduler waits to set expiresAt, so if a model is loading it's
 		// possible that it will be set to the unix epoch. For those cases, just
@@ -1546,7 +1547,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 	if len(req.Tools) > 0 {
 		caps = append(caps, model.CapabilityTools)
 	}
-	if req.Think != nil && req.Think.AsBool() {
+	if req.Think != nil && req.Think.Bool() {
 		caps = append(caps, model.CapabilityThinking)
 	}
 
@@ -1600,7 +1601,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 
 	// Validate Think value: string values currently only allowed for gptoss models
 	if req.Think != nil && req.Think.IsString() && !useHarmony {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("think value %q is not supported for this model", req.Think.AsString())})
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("think value %q is not supported for this model", req.Think.String())})
 		return
 	}
 
@@ -1619,7 +1620,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 
 	var thinkingState *thinking.Parser
 	openingTag, closingTag := thinking.InferTags(m.Template.Template)
-	if req.Think != nil && req.Think.AsBool() && openingTag != "" && closingTag != "" {
+	if req.Think != nil && req.Think.Bool() && openingTag != "" && closingTag != "" {
 		thinkingState = &thinking.Parser{
 			OpeningTag: openingTag,
 			ClosingTag: closingTag,
@@ -1671,7 +1672,8 @@ func (s *Server) ChatHandler(c *gin.Context) {
 						*toolName = strings.TrimPrefix(*toolName, "functions.")
 						var args api.ToolCallFunctionArguments
 						if err := json.Unmarshal([]byte(toolContent), &args); err != nil {
-							ch <- gin.H{"error parsing tool call": err.Error()}
+							errStr := fmt.Sprintf("error parsing tool call: raw='%s', err=%s", toolContent, err.Error())
+							ch <- gin.H{"error": errStr}
 							return
 						}
 						res.Message.ToolCalls = []api.ToolCall{{Function: api.ToolCallFunction{Name: *toolName, Arguments: args}}}
