@@ -535,6 +535,7 @@ func (b *Backend) Load(ctx context.Context, progress func(float32)) error {
 				const BS = 17                             // MXFP4 block size
 				bts := make([]byte, 8*BS*format.KibiByte) // ~128k block aligned
 				var s uint64
+				var tmp [16]byte
 				for s < t.Size() {
 					// Stop if either the parent context has been canceled or if any of the other tensors returned an error
 					if err := ctx.Err(); err != nil {
@@ -546,37 +547,13 @@ func (b *Backend) Load(ctx context.Context, progress func(float32)) error {
 						return err
 					}
 					for j := range n / BS {
-						for i := 1; i < BS; i++ {
-							// swap nibbles
-							t_lo := bts[j*BS+i] & 0x0F
-							t_hi := bts[j*BS+i] & 0xF0
-							bts[j*BS+i] = (t_lo << 4) | (t_hi >> 4)
-						}
-						// transform aaaa...bbbb... to abababab...
-						oi := 0
-						tmp := [16]byte{}
 						for i := 1; i < 9; i++ {
-							blk_a0 := bts[j*BS+i] & 0xF0
-							blk_a1 := bts[j*BS+i] << 4
-							blk_b0 := bts[j*BS+i+8] >> 4
-							blk_b1 := bts[j*BS+i+8] & 0x0F
-							// swap once more
-							out0 := blk_a0 | blk_b0
-							out1 := blk_a1 | blk_b1
-							out_h0 := out0 & 0xF0
-							out_l0 := out0 & 0x0F
-							out_h1 := out1 & 0xF0
-							out_l1 := out1 & 0x0F
-							out0 = (out_h0 >> 4) | (out_l0 << 4)
-							out1 = (out_h1 >> 4) | (out_l1 << 4)
-							tmp[oi] = out0
-							oi++
-							tmp[oi] = out1
-							oi++
+							// transform a1b2c3 ... x7y8z9 -> 71xa82yb93zc
+							a, b := bts[j*BS+i], bts[j*BS+i+8]
+							tmp[2*(i-1)] = (a & 0x0F) | (b << 4)
+							tmp[2*(i-1)+1] = (a >> 4) | (b & 0xF0)
 						}
-						for i := range tmp {
-							bts[j*BS+i+1] = tmp[i]
-						}
+						copy(bts[j*BS+1:j*BS+17], tmp[:])
 					}
 
 					for _, tt := range tts {
@@ -650,6 +627,18 @@ func (b *Backend) Load(ctx context.Context, progress func(float32)) error {
 
 			return nil
 		})
+	}
+
+	// Cleanup any backend state from devices that we didn't end up using
+nextDevice:
+	for _, d := range append(gpus, append(accels, cpus...)...) {
+		for _, backend := range b.schedBackends {
+			if d == C.ggml_backend_get_device(backend) {
+				continue nextDevice
+			}
+		}
+
+		C.ggml_backend_dev_reset(d)
 	}
 
 	if err := g.Wait(); err != nil {
@@ -843,23 +832,7 @@ func (c *Context) newTensor(dtype ml.DType, shape []int) ml.Tensor {
 		panic("set Input or Layer before creating tensors")
 	}
 
-	var cdtype uint32
-	switch dtype {
-	case ml.DTypeF32:
-		cdtype = C.GGML_TYPE_F32
-	case ml.DTypeF16:
-		cdtype = C.GGML_TYPE_F16
-	case ml.DTypeQ80:
-		cdtype = C.GGML_TYPE_Q8_0
-	case ml.DTypeQ40:
-		cdtype = C.GGML_TYPE_Q4_0
-	case ml.DTypeI32:
-		cdtype = C.GGML_TYPE_I32
-	case ml.DTypeMXFP4:
-		cdtype = C.GGML_TYPE_MXFP4
-	default:
-		panic("unsupported dtype")
-	}
+	cdtype := ggmlDType(dtype)
 
 	if len(shape) < 1 || shape[0] == 0 {
 		var shape C.int64_t = 0
@@ -1053,6 +1026,32 @@ func (t *Tensor) DType() ml.DType {
 		return ml.DTypeMXFP4
 	default:
 		return ml.DTypeOther
+	}
+}
+
+func ggmlDType(dtype ml.DType) uint32 {
+	switch dtype {
+	case ml.DTypeF32:
+		return C.GGML_TYPE_F32
+	case ml.DTypeF16:
+		return C.GGML_TYPE_F16
+	case ml.DTypeQ80:
+		return C.GGML_TYPE_Q8_0
+	case ml.DTypeQ40:
+		return C.GGML_TYPE_Q4_0
+	case ml.DTypeI32:
+		return C.GGML_TYPE_I32
+	case ml.DTypeMXFP4:
+		return C.GGML_TYPE_MXFP4
+	default:
+		panic("unsupported dtype")
+	}
+}
+
+func (t *Tensor) Cast(ctx ml.Context, dtype ml.DType) ml.Tensor {
+	return &Tensor{
+		b: t.b,
+		t: C.ggml_cast(ctx.(*Context).ctx, t.t, ggmlDType(dtype)),
 	}
 }
 
