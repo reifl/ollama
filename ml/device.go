@@ -361,7 +361,7 @@ func ByLibrary(l []DeviceInfo) [][]DeviceInfo {
 }
 
 func LibraryPaths(l []DeviceInfo) []string {
-	var gpuLibs []string
+	gpuLibs := []string{LibOllamaPath}
 	for _, gpu := range l {
 		for _, dir := range gpu.LibraryPath {
 			needed := true
@@ -432,7 +432,8 @@ func FlashAttentionSupported(l []DeviceInfo) bool {
 		supportsFA := gpu.Library == "cpu" ||
 			gpu.Name == "Metal" || gpu.Library == "Metal" ||
 			(gpu.Library == "CUDA" && gpu.DriverMajor >= 7 && !(gpu.ComputeMajor == 7 && gpu.ComputeMinor == 2)) ||
-			gpu.Library == "ROCm"
+			gpu.Library == "ROCm" ||
+			gpu.Library == "Vulkan"
 
 		if !supportsFA {
 			return false
